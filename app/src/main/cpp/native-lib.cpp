@@ -2,232 +2,234 @@
 #include <stdlib.h>
 #include <string>
 #include <opencl.h>
+#include <android/log.h>
 
-void printDeviceWorkInfo(cl_device_id device)
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <unistd.h>
+#include <sys/time.h>
+#include<time.h>
+#include<stdio.h>
+#include<stdlib.h>
+
+
+#define TAG OpenCL
+#define LOGD(...)  __android_log_print(ANDROID_LOG_DEBUG,"OPENCL",__VA_ARGS__)
+
+const int ARRAY_SIZE = 100000;
+
+//一、 选择OpenCL平台并创建一个上下文
+cl_context CreateContext()
 {
-    cl_uint nMaxComputeUnits = 0;
-    cl_uint nMaxWorkItemDims = 0;
-    cl_uint i = 0;
-    size_t* nMaxWorkItemSizes = NULL;
-    size_t nMaxWorkGroupSize = 0;
-    size_t size = 0 ;
-    cl_int err ;
-    err = clGetDeviceInfo(device,CL_DEVICE_MAX_COMPUTE_UNITS,sizeof(cl_uint),&nMaxComputeUnits,&size);
-    if(err==CL_SUCCESS){
-        printf("nMaxComputeUnits=%d\n",nMaxComputeUnits);
+    cl_int errNum;
+    cl_uint numPlatforms;
+    cl_platform_id firstPlatformId;
+    cl_context context = NULL;
+
+    //选择可用的平台中的第一个
+    errNum = clGetPlatformIDs(1, &firstPlatformId, &numPlatforms);
+    if (errNum != CL_SUCCESS || numPlatforms <= 0)
+    {
+        std::cerr << "Failed to find any OpenCL platforms." << std::endl;
+        return NULL;
     }
 
-    err = clGetDeviceInfo(device,CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS,sizeof(cl_uint),&nMaxWorkItemDims,&size);
-    if(err==CL_SUCCESS){
-        printf("nMaxWorkItemDims=%d\n",nMaxWorkItemDims);
-        nMaxWorkItemSizes = (size_t*)malloc(sizeof(size_t)*nMaxWorkItemDims);
-        err = clGetDeviceInfo(device,CL_DEVICE_MAX_WORK_ITEM_SIZES,sizeof(size_t)*nMaxWorkItemDims,nMaxWorkItemSizes,&size);
-        if(err==CL_SUCCESS){
-            for(i=0;i<nMaxWorkItemDims;i++){
-                printf("nMaxWorkItemSizes[%d]=%d\n",i,nMaxWorkItemSizes);
-            }
-        }
-        free(nMaxWorkItemSizes);
-    }
+    //创建一个OpenCL上下文环境
+    cl_context_properties contextProperties[] =
+            {
+                    CL_CONTEXT_PLATFORM,
+                    (cl_context_properties)firstPlatformId,
+                    0
+            };
+    context = clCreateContextFromType(contextProperties, CL_DEVICE_TYPE_GPU,
+                                      NULL, NULL, &errNum);
 
-    err = clGetDeviceInfo(device,CL_DEVICE_MAX_WORK_GROUP_SIZE,sizeof(size_t),&nMaxWorkGroupSize,&size);
-    if(err==CL_SUCCESS){
-        printf("nMaxWorkGroupSize=%d\n",nMaxWorkGroupSize);
-    }
-}
-
-const char* program_src = ""
-        "__kernel void vector_add_gpu (__global const float* src_a,\n"
-        "   __global const float* src_b,\n"
-        "   __global float* res,\n"
-        "   const int num)\n"
-        "{\n"
-        "   int idx = get_global_id(0);\n"
-        "   if(idx<num){"
-        "       res=src_a+src_b;\n"
-        "   }\n"
-        "}\n"
-;
-
-static const cl_int vect_len = 10000000;
-
-static float* vect_a = NULL ;
-static float* vect_b = NULL ;
-static float* vect_c = NULL ;
-
-void initVects()
-{
-    cl_int i;
-    vect_a = (float*)malloc(sizeof(float)*vect_len);
-    vect_b = (float*)malloc(sizeof(float)*vect_len);
-    vect_c = (float*)malloc(sizeof(float)*vect_len);
-    for(i=0;i<vect_len;i++){
-        *vect_a=(float)rand()/RAND_MAX;
-        *vect_b=(float)rand()/RAND_MAX;
-        *vect_c=0.0f;
-    }
-}
-
-void printVects()
-{
-    cl_int i;
-    if(vect_a && vect_b && vect_c){
-        printf("######################\n");
-        for(i=0;i<4;i++){
-            printf("%08d : %f,%f,%f\n",i,vect_a,vect_b,vect_c);
-        }
-        printf("    ...    \n");
-        for(i=vect_len-4;i<vect_len;i++){
-            printf("%08d : %f,%f,%f\n",i,vect_a,vect_b,vect_c);
-        }
-        printf("######################\n");
-    }
-}
-
-void releaseVects()
-{
-    if(vect_a){
-        free(vect_a);
-        vect_a=NULL;
-    }
-    if(vect_b){
-        free(vect_b);
-        vect_b=NULL;
-    }
-    if(vect_c){
-        free(vect_c);
-        vect_c=NULL;
-    }
-}
-
-size_t shrRoundUp(size_t f , size_t s)
-{
-    return (s+f-1)/f*f;
+    return context;
 }
 
 
-
-void test()
+//二、 创建设备并创建命令队列
+cl_command_queue CreateCommandQueue(cl_context context, cl_device_id *device)
 {
-    cl_int error = 0 ;
-    cl_platform_id platform;
-    cl_context context;
-    cl_command_queue queue;
-    cl_device_id device;
-    cl_mem inbuf_a ;
-    cl_mem inbuf_b ;
-    cl_mem outbuf_r ;
-    const cl_int size = vect_len;
-    cl_int i ;
-    const size_t mem_size = sizeof(float)*size;
-    size_t program_len = strlen(program_src);
-    char* build_log;
-    size_t log_size;
-    size_t local_ws;
-    size_t global_ws;
-    cl_kernel vector_add_kernel;
+    cl_int errNum;
+    cl_device_id *devices;
+    cl_command_queue commandQueue = NULL;
+    size_t deviceBufferSize = -1;
 
-    error = clGetPlatformIDs(1,&platform,NULL);
-    if(error != CL_SUCCESS){
-        printf("get platform id fail !\n");
-        exit(1);
+    // 获取设备缓冲区大小
+    errNum = clGetContextInfo(context, CL_CONTEXT_DEVICES, 0, NULL, &deviceBufferSize);
+
+    if (deviceBufferSize <= 0)
+    {
+        std::cerr << "No devices available.";
+        return NULL;
     }
 
-    error = clGetDeviceIDs(platform,CL_DEVICE_TYPE_GPU,1,&device,NULL);
-    if(error != CL_SUCCESS){
-        printf("get gpu device fail !\n");
-        exit(1);
+    // 为设备分配缓存空间
+    devices = new cl_device_id[deviceBufferSize / sizeof(cl_device_id)];
+    errNum = clGetContextInfo(context, CL_CONTEXT_DEVICES, deviceBufferSize, devices, NULL);
+
+    //选取可用设备中的第一个
+    commandQueue = clCreateCommandQueue(context, devices[0], 0, NULL);
+
+    *device = devices[0];
+    delete[] devices;
+    return commandQueue;
+}
+
+
+// 三、创建和构建程序对象
+cl_program CreateProgram(cl_context context, cl_device_id device, const char* fileName)
+{
+    cl_int errNum;
+    cl_program program;
+
+    std::ifstream kernelFile(fileName, std::ios::in);
+    if (!kernelFile.is_open())
+    {
+        LOGD("Failed to open file for reading: %s\n" , fileName );
+        return NULL;
     }
 
-    printDeviceWorkInfo(device);
+    std::ostringstream oss;
+    oss << kernelFile.rdbuf();
 
-    cl_context_properties properties[]={
-            CL_CONTEXT_PLATFORM,
-            (cl_context_properties)platform,
-            0
-    };
+    std::string srcStdStr = oss.str();
+    const char *srcStr = srcStdStr.c_str();
+    program = clCreateProgramWithSource(context, 1,
+                                        (const char**)&srcStr,
+                                        NULL, NULL);
 
-    // 这里要配置properties
-    context = clCreateContext(properties,1,&device,NULL,NULL,&error);
-    if(error != CL_SUCCESS){
-        printf("create context fail !\n");
-        exit(1);
+    errNum = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+
+    return program;
+}
+
+//创建和构建程序对象
+bool CreateMemObjects(cl_context context, cl_mem memObjects[3],
+                      float *a, float *b)
+{
+    memObjects[0] = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                   sizeof(float) * ARRAY_SIZE, a, NULL);
+    memObjects[1] = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                   sizeof(float) * ARRAY_SIZE, b, NULL);
+    memObjects[2] = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                   sizeof(float) * ARRAY_SIZE, NULL, NULL);
+    return true;
+}
+
+
+// 释放OpenCL资源
+void Cleanup(cl_context context, cl_command_queue commandQueue,
+             cl_program program, cl_kernel kernel, cl_mem memObjects[3])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (memObjects[i] != 0)
+            clReleaseMemObject(memObjects[i]);
+    }
+    if (commandQueue != 0)
+        clReleaseCommandQueue(commandQueue);
+
+    if (kernel != 0)
+        clReleaseKernel(kernel);
+
+    if (program != 0)
+        clReleaseProgram(program);
+
+    if (context != 0)
+        clReleaseContext(context);
+}
+
+
+int test()
+{
+
+
+
+    cl_context context = 0;
+    cl_command_queue commandQueue = 0;
+    cl_program program = 0;
+    cl_device_id device = 0;
+    cl_kernel kernel = 0;
+    cl_mem memObjects[3] = { 0, 0, 0 };
+    cl_int errNum;
+    // uint64_t t1,t2,t3;
+    clock_t t1,t2,t3;
+
+
+    const char* filename = "HelloWorld.cl";
+    // 一、选择OpenCL平台并创建一个上下文
+    context = CreateContext();
+
+    // 二、 创建设备并创建命令队列
+    commandQueue = CreateCommandQueue(context, &device);
+
+    //创建和构建程序对象
+    program = CreateProgram(context, device, filename);//"HelloWorld.cl");
+
+    // 四、 创建OpenCL内核并分配内存空间
+    kernel = clCreateKernel(program, "hello_kernel", NULL);
+
+    //创建要处理的数据
+    float result[ARRAY_SIZE];
+    float a[ARRAY_SIZE];
+    float b[ARRAY_SIZE];
+    for (int i = 0; i < ARRAY_SIZE; i++)
+    {
+        a[i] = (float)i;
+        b[i] = (float)(ARRAY_SIZE - i);
     }
 
-    queue = clCreateCommandQueue(context,device,CL_QUEUE_PROFILING_ENABLE,&error);
-    if(error != CL_SUCCESS){
-        printf("create command queue fail !\n");
-        exit(1);
+    t1 = clock();  //mach_absolute_time();
+    LOGD("t1 = %.8f\n",(double)t1);
+    for(int j = 0;j <  ARRAY_SIZE;j++){
+        result[j] = a[j]+b[j];
+
     }
 
-    initVects();
-    printVects();
+    t2 = clock(); //mach_absolute_time();
+    LOGD("t2 = %.8f\n",(double)t2);
 
-    inbuf_a = clCreateBuffer(context,CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR,mem_size,vect_a,&error);
-    if(error!=CL_SUCCESS){
-        printf("create buffer inbuf_a fail !\n");
-        exit(1);
-    }
-    inbuf_b = clCreateBuffer(context,CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR,mem_size,vect_b,&error);
-    if(error!=CL_SUCCESS){
-        printf("create buffer inbuf_b fail !\n");
-        exit(1);
-    }
-    outbuf_r = clCreateBuffer(context,CL_MEM_WRITE_ONLY,mem_size,NULL,&error);
-    if(error!=CL_SUCCESS){
-        printf("create buffer outbuf_r fail !\n");
-        exit(1);
+    //创建内存对象
+    if (!CreateMemObjects(context, memObjects, a, b))
+    {
+        Cleanup(context, commandQueue, program, kernel, memObjects);
+        return 1;
     }
 
-    cl_program program = clCreateProgramWithSource(context,1,&program_src,&program_len,&error);
-    if(error!=CL_SUCCESS){
-        printf("create program fail !\n");
-        exit(1);
-    }
-    error = clBuildProgram(program,1,&device,NULL,NULL,NULL);
-    if(error!=CL_SUCCESS){
-        printf("build program fail !\n");
-        clGetProgramBuildInfo(program,device,CL_PROGRAM_BUILD_LOG,1024,build_log,&log_size);
-        printf("build_log : %s\n",build_log);
-        exit(1);
-    }
+    // 五、 设置内核数据并执行内核
+    errNum = clSetKernelArg(kernel, 0, sizeof(cl_mem), &memObjects[0]);
+    errNum |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &memObjects[1]);
+    errNum |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &memObjects[2]);
 
-    vector_add_kernel = clCreateKernel(program,"vector_add_gpu",&error);
-    if(error!=CL_SUCCESS){
-        printf("create kernel fail !\n");
-        exit(1);
-    }
+    size_t globalWorkSize[1] = { ARRAY_SIZE };
+    size_t localWorkSize[1] = { 1 };
 
-    error = clSetKernelArg(vector_add_kernel,0,sizeof(cl_mem),&inbuf_a);
-    error |= clSetKernelArg(vector_add_kernel,1,sizeof(cl_mem),&inbuf_b);
-    error |= clSetKernelArg(vector_add_kernel,2,sizeof(cl_mem),&outbuf_r);
-    error |= clSetKernelArg(vector_add_kernel,3,sizeof(cl_int),&size);
-    if(error!=CL_SUCCESS){
-        printf("set kernel arg fail !\n");
-        exit(1);
-    }
+    errNum = clEnqueueNDRangeKernel(commandQueue, kernel, 1, NULL,
+                                    globalWorkSize, localWorkSize,
+                                    0, NULL, NULL);
 
-    local_ws = 256;//我们使用一维的clEnqueueNDRangeKernel，这里local_ws选择nMaxWorkItemSizes=256
-    global_ws = shrRoundUp(local_ws,size); //这里是线程总数，应该是local_ws的倍数。
-    printf("local_ws=%d,global_ws=%d\n",local_ws,global_ws);
+    // 六、 读取执行结果并释放OpenCL资源
+    errNum = clEnqueueReadBuffer(commandQueue, memObjects[2], CL_TRUE,
+                                 0, ARRAY_SIZE * sizeof(float), result,
+                                 0, NULL, NULL);
 
-    error = clEnqueueNDRangeKernel(queue,vector_add_kernel,1,NULL,&global_ws,&local_ws,0,NULL,NULL);
-    if(error!=CL_SUCCESS){
-        printf("enqueue kernel fail !\n");
-        exit(1);
-    }
+    t3 = clock();  //mach_absolute_time();
 
-    clEnqueueReadBuffer(queue,outbuf_r,CL_TRUE,0,mem_size,vect_c,0,NULL,NULL);
-    printVects();
 
-    clReleaseKernel(vector_add_kernel);
-    clReleaseProgram(program);
-    clReleaseCommandQueue(queue);
-    clReleaseContext(context);
-    clReleaseMemObject(inbuf_a);
-    clReleaseMemObject(inbuf_b);
-    clReleaseMemObject(outbuf_r);
-    releaseVects();
+
+
+    LOGD("cpu t = %.8f\n",(float)(t2-t1)/CLOCKS_PER_SEC);
+    LOGD("gpu t = %.8f \n",(double)(t3-t2)/CLOCKS_PER_SEC);
+
+
+    LOGD("Executed program succesfully.");
+    getchar();
+    Cleanup(context, commandQueue, program, kernel, memObjects);
+
+    return 0;
 }
 
 

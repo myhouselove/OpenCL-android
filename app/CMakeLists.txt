@@ -16,9 +16,9 @@ set(libs "${CMAKE_SOURCE_DIR}/src/main/jniLibs")
 include_directories(${CMAKE_SOURCE_DIR}/src/main/cpp/include)
 
 #--------------------------------------------------- import ---------------------------------------------------#
-add_library(libGLES_mali SHARED IMPORTED )
-set_target_properties(libGLES_mali PROPERTIES
-    IMPORTED_LOCATION "${libs}/${ANDROID_ABI}/libGLES_mali.so")
+add_library(libOpenCL SHARED IMPORTED )
+set_target_properties(libOpenCL PROPERTIES
+    IMPORTED_LOCATION "${libs}/${ANDROID_ABI}/libOpenCL.so")
 
 
 add_library( # Sets the name of the library.
@@ -48,7 +48,7 @@ find_library( # Sets the name of the path variable.
 # build script, prebuilt third-party libraries, or system libraries.
 
 target_link_libraries( # Specifies the target library.
-                       native-lib libGLES_mali
+                       native-lib libOpenCL
 
                        # Links the target library to the log library
                        # included in the NDK.
